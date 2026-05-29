@@ -2532,7 +2532,6 @@ document.querySelectorAll('.domain-section').forEach(s=>observer.observe(s));
 <!-- Supabase Live Data -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
-// 새 상태 CSS 추가
 (function() {
   var s = document.createElement('style');
   s.textContent =
@@ -2541,41 +2540,26 @@ document.querySelectorAll('.domain-section').forEach(s=>observer.observe(s));
     '.st-badge.backlog{background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1}' +
     '.filter-btn.f-review.active{background:#3b82f6;border-color:#3b82f6}' +
     '.filter-btn.f-todo.active{background:#8b5cf6;border-color:#8b5cf6}' +
-    '.filter-btn.f-backlog.active{background:#94a3b8;border-color:#94a3b8}' +
-    '.link-item.review .link-status-icon::before{content:"🔍"}' +
-    '.link-item.todo .link-status-icon::before{content:"📋"}' +
-    '.link-item.backlog .link-status-icon::before{content:"⏸"}';
+    '.filter-btn.f-backlog.active{background:#94a3b8;border-color:#94a3b8}';
   document.head.appendChild(s);
 })();
 
-function getLabelStatus(labels, state) {
-  var priority = ['진행중','검토대기','할일','백로그','완료'];
-  var statusMap = {'진행중':'wip','검토대기':'review','할일':'todo','백로그':'backlog','완료':'done'};
-  for (var i = 0; i < priority.length; i++) {
-    if ((labels || []).indexOf(priority[i]) >= 0) {
-      return { status: statusMap[priority[i]], label: priority[i] };
-    }
-  }
-  if (state === 'closed') return { status: 'done', label: '완료' };
-  return { status: 'none', label: '미분류' };
-}
+var STATUS_LABEL_MAP = {
+  '상태::진행중': { status: 'wip',     label: '진행중'   },
+  '상태::검토대기': { status: 'review',  label: '검토대기' },
+  '상태::할일':   { status: 'todo',    label: '할일'     },
+  '상태::백로그': { status: 'backlog', label: '백로그'   },
+  '상태::완료':   { status: 'done',    label: '완료'     }
+};
+var STATUS_PRIORITY = ['상태::진행중','상태::검토대기','상태::할일','상태::백로그','상태::완료'];
 
-function getCardStatus(links, detailByIid) {
-  if (links.length === 0) return { status: 'none', label: '미분류' };
-  var priority = ['wip','review','todo','backlog'];
-  var found = { status: 'done', label: '완료' };
-  var allDone = true;
-  for (var i = 0; i < links.length; i++) {
-    var d = detailByIid[links[i].linked_iid];
-    var ls = getLabelStatus(d ? d.labels : [], links[i].linked_state);
-    if (ls.status !== 'done') allDone = false;
-    if (priority.indexOf(ls.status) < priority.indexOf(found.status) || found.status === 'done') {
-      if (ls.status !== 'done' && ls.status !== 'none') found = ls;
+function getCardStatusFromLabels(labels) {
+  for (var i = 0; i < STATUS_PRIORITY.length; i++) {
+    if ((labels || []).indexOf(STATUS_PRIORITY[i]) >= 0) {
+      return STATUS_LABEL_MAP[STATUS_PRIORITY[i]];
     }
   }
-  if (allDone) return { status: 'done', label: '완료' };
-  if (found.status !== 'done') return found;
-  return { status: 'none', label: '미분류' };
+  return null;
 }
 
 function setupFilters() {
@@ -2583,13 +2567,13 @@ function setupFilters() {
   if (!doneBtn) return;
   var group = doneBtn.parentElement;
   var statuses = [
-    { status: '', label: '전체', cls: '' },
-    { status: 'wip', label: '진행중', cls: 'f-wip' },
-    { status: 'review', label: '검토대기', cls: 'f-review' },
-    { status: 'todo', label: '할일', cls: 'f-todo' },
-    { status: 'backlog', label: '백로그', cls: 'f-backlog' },
-    { status: 'done', label: '완료', cls: 'f-done' },
-    { status: 'none', label: '미분류', cls: 'f-none' }
+    { status: '',        label: '전체',    cls: ''         },
+    { status: 'wip',     label: '진행중',  cls: 'f-wip'    },
+    { status: 'review',  label: '검토대기', cls: 'f-review' },
+    { status: 'todo',    label: '할일',    cls: 'f-todo'   },
+    { status: 'backlog', label: '백로그',  cls: 'f-backlog'},
+    { status: 'done',    label: '완료',    cls: 'f-done'   },
+    { status: 'none',    label: '미분류',  cls: 'f-none'   }
   ];
   group.innerHTML = statuses.map(function(s, i) {
     return '<button class="filter-btn ' + s.cls + (i === 0 ? ' active' : '') + '" data-status="' + s.status + '">' + s.label + '</button>';
@@ -2613,20 +2597,23 @@ function setupFilters() {
   );
   try {
     var results = await Promise.all([
-      client.from('issues').select('iid,description'),
+      client.from('issues').select('iid,description,labels'),
       client.from('linked_items').select('*'),
       client.from('linked_details').select('*'),
       client.from('sync_meta').select('last_synced_at').eq('id', 1).single()
     ]);
-    var issues = results[0].data;
-    var linkedItems = results[1].data;
+    var issues       = results[0].data;
+    var linkedItems  = results[1].data;
     var linkedDetails = results[2].data;
-    var syncMeta = results[3].data;
+    var syncMeta     = results[3].data;
 
-    var srsCodeToIid = {};
+    // SRS 코드 → iid, labels 매핑
+    var srsCodeToIid    = {};
+    var srsIidToLabels  = {};
     (issues || []).forEach(function(issue) {
       var m = (issue.description || '').match(/<!--\s*srs-id:\s*([\w-]+)\s*-->/);
       if (m) srsCodeToIid[m[1]] = issue.iid;
+      srsIidToLabels[issue.iid] = issue.labels || [];
     });
 
     var linksBySrsIid = {};
@@ -2649,11 +2636,24 @@ function setupFilters() {
       var codeEl = card.querySelector('.code-chip');
       if (!codeEl) return;
       var srsCode = codeEl.textContent.trim();
-      var srsIid = srsCodeToIid[srsCode];
+      var srsIid  = srsCodeToIid[srsCode];
       if (!srsIid) return;
 
-      var links = linksBySrsIid[srsIid] || [];
-      var cardSt = getCardStatus(links, detailByIid);
+      var labels  = srsIidToLabels[srsIid] || [];
+      var links   = linksBySrsIid[srsIid] || [];
+
+      // SRS 이슈의 상태:: 라벨로 카드 상태 결정
+      var cardSt = getCardStatusFromLabels(labels);
+      if (!cardSt) {
+        // 라벨 없으면 linked 이슈 state로 폴백
+        if (links.length === 0) {
+          cardSt = { status: 'none', label: '미분류' };
+        } else if (links.every(function(l) { return l.linked_state === 'closed'; })) {
+          cardSt = { status: 'done', label: '완료' };
+        } else {
+          cardSt = { status: 'none', label: '미분류' };
+        }
+      }
 
       card.dataset.status = cardSt.status;
       var badge = card.querySelector('.st-badge');
@@ -2667,14 +2667,15 @@ function setupFilters() {
           card.appendChild(container);
         }
         container.innerHTML = links.map(function(link) {
-          var d = detailByIid[link.linked_iid];
-          var ls = getLabelStatus(d ? d.labels : [], link.linked_state);
+          var isClosed = link.linked_state === 'closed';
+          var icon = isClosed ? '✅' : '🔄';
+          var cls  = isClosed ? 'closed' : 'open';
           var modalIdx = typeof MODAL_DATA !== 'undefined'
             ? MODAL_DATA.findIndex(function(m) { return m.url === link.linked_web_url; })
             : -1;
-          return '<button class="link-item ' + ls.status + '"' +
+          return '<button class="link-item ' + cls + '"' +
             (modalIdx >= 0 ? ' onclick="openModal(' + modalIdx + ')"' : '') + '>' +
-            '<span class="link-status-icon">' + (iconMap[ls.status] || '○') + '</span>' +
+            '<span class="link-status-icon">' + icon + '</span>' +
             '<span class="link-item-title">' + link.linked_title + '</span>' +
             '<span class="link-arrow">›</span></button>';
         }).join('');
@@ -2689,7 +2690,7 @@ function setupFilters() {
         if (!fresh) return;
         MODAL_DATA[i].state = fresh.state;
         if (fresh.description) MODAL_DATA[i].desc = fresh.description;
-        if (fresh.milestone) MODAL_DATA[i].milestone = fresh.milestone;
+        if (fresh.milestone)   MODAL_DATA[i].milestone = fresh.milestone;
         MODAL_DATA[i].assignees = fresh.assignees ? fresh.assignees.join(', ') : '';
       });
     }
@@ -2697,14 +2698,14 @@ function setupFilters() {
     setupFilters();
 
     if (syncMeta && syncMeta.last_synced_at) {
-      var t = new Date(syncMeta.last_synced_at);
-      var pad = function(n) { return String(n).padStart(2, '0'); };
-      var syncEl = document.createElement('span');
-      syncEl.style.cssText = 'font-size:11px;color:#9aa0ad;font-weight:400;margin-left:8px;';
-      syncEl.textContent = t.getFullYear() + '.' + pad(t.getMonth()+1) + '.' + pad(t.getDate()) +
+      var t   = new Date(syncMeta.last_synced_at);
+      var pad = function(n) { return String(n).padStart(2,'0'); };
+      var el  = document.createElement('span');
+      el.style.cssText = 'font-size:11px;color:#9aa0ad;font-weight:400;margin-left:8px;';
+      el.textContent = t.getFullYear() + '.' + pad(t.getMonth()+1) + '.' + pad(t.getDate()) +
         ' ' + pad(t.getHours()) + ':' + pad(t.getMinutes()) + ' 동기화';
       var brand = document.querySelector('.topbar-brand');
-      if (brand) brand.appendChild(syncEl);
+      if (brand) brand.appendChild(el);
     }
   } catch(e) {
     console.error('Supabase 데이터 로드 실패:', e);
