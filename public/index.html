@@ -2532,35 +2532,86 @@ document.querySelectorAll('.domain-section').forEach(s=>observer.observe(s));
 <!-- Supabase Live Data -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
-var _supabaseClient = null;
-function getClient() {
-  if (!_supabaseClient) {
-    _supabaseClient = window.supabase.createClient(
-      'https://pdzbyyywfhwzityvyykp.supabase.co',
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkemJ5eXl3Zmh3eml0eXZ5eWtwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAwMTE2MjAsImV4cCI6MjA5NTU4NzYyMH0.KZdpmmhiBOwbZQV8gD0v6Atx-VCUspmJ-S5lt8lfVQs'
-    );
+// 새 상태 CSS 추가
+(function() {
+  var s = document.createElement('style');
+  s.textContent =
+    '.st-badge.review{background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd}' +
+    '.st-badge.todo{background:#f3e8ff;color:#7c3aed;border:1px solid #c4b5fd}' +
+    '.st-badge.backlog{background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1}' +
+    '.filter-btn.f-review.active{background:#3b82f6;border-color:#3b82f6}' +
+    '.filter-btn.f-todo.active{background:#8b5cf6;border-color:#8b5cf6}' +
+    '.filter-btn.f-backlog.active{background:#94a3b8;border-color:#94a3b8}' +
+    '.link-item.review .link-status-icon::before{content:"🔍"}' +
+    '.link-item.todo .link-status-icon::before{content:"📋"}' +
+    '.link-item.backlog .link-status-icon::before{content:"⏸"}';
+  document.head.appendChild(s);
+})();
+
+function getLabelStatus(labels, state) {
+  var priority = ['진행중','검토대기','할일','백로그','완료'];
+  var statusMap = {'진행중':'wip','검토대기':'review','할일':'todo','백로그':'backlog','완료':'done'};
+  for (var i = 0; i < priority.length; i++) {
+    if ((labels || []).indexOf(priority[i]) >= 0) {
+      return { status: statusMap[priority[i]], label: priority[i] };
+    }
   }
-  return _supabaseClient;
+  if (state === 'closed') return { status: 'done', label: '완료' };
+  return { status: 'none', label: '미분류' };
 }
 
-function createRefreshButton() {
-  var existing = document.getElementById('supabase-refresh-btn');
-  if (existing) return;
-  var btn = document.createElement('button');
-  btn.id = 'supabase-refresh-btn';
-  btn.textContent = '🔄 새로고침';
-  btn.style.cssText = 'margin-left:auto;padding:5px 14px;border-radius:20px;border:1.5px solid #4361ee;background:#fff;font-size:12px;font-weight:600;cursor:pointer;color:#4361ee;white-space:nowrap;';
-  btn.onclick = function() { loadFromSupabase(); };
-  var topbar = document.querySelector('.topbar');
-  if (topbar) topbar.appendChild(btn);
+function getCardStatus(links, detailByIid) {
+  if (links.length === 0) return { status: 'none', label: '미분류' };
+  var priority = ['wip','review','todo','backlog'];
+  var found = { status: 'done', label: '완료' };
+  var allDone = true;
+  for (var i = 0; i < links.length; i++) {
+    var d = detailByIid[links[i].linked_iid];
+    var ls = getLabelStatus(d ? d.labels : [], links[i].linked_state);
+    if (ls.status !== 'done') allDone = false;
+    if (priority.indexOf(ls.status) < priority.indexOf(found.status) || found.status === 'done') {
+      if (ls.status !== 'done' && ls.status !== 'none') found = ls;
+    }
+  }
+  if (allDone) return { status: 'done', label: '완료' };
+  if (found.status !== 'done') return found;
+  return { status: 'none', label: '미분류' };
 }
 
-async function loadFromSupabase() {
-  var btn = document.getElementById('supabase-refresh-btn');
-  if (btn) { btn.textContent = '⏳ 로딩 중...'; btn.disabled = true; btn.style.opacity = '0.6'; }
+function setupFilters() {
+  var doneBtn = document.querySelector('.filter-btn.f-done');
+  if (!doneBtn) return;
+  var group = doneBtn.parentElement;
+  var statuses = [
+    { status: '', label: '전체', cls: '' },
+    { status: 'wip', label: '진행중', cls: 'f-wip' },
+    { status: 'review', label: '검토대기', cls: 'f-review' },
+    { status: 'todo', label: '할일', cls: 'f-todo' },
+    { status: 'backlog', label: '백로그', cls: 'f-backlog' },
+    { status: 'done', label: '완료', cls: 'f-done' },
+    { status: 'none', label: '미분류', cls: 'f-none' }
+  ];
+  group.innerHTML = statuses.map(function(s, i) {
+    return '<button class="filter-btn ' + s.cls + (i === 0 ? ' active' : '') + '" data-status="' + s.status + '">' + s.label + '</button>';
+  }).join('');
+  group.querySelectorAll('.filter-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      group.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      var st = btn.dataset.status;
+      document.querySelectorAll('.card').forEach(function(card) {
+        card.style.display = (!st || card.dataset.status === st) ? '' : 'none';
+      });
+    });
+  });
+}
 
+(async function() {
+  var client = window.supabase.createClient(
+    'https://pdzbyyywfhwzityvyykp.supabase.co',
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkemJ5eXl3Zmh3eml0eXZ5eWtwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAwMTE2MjAsImV4cCI6MjA5NTU4NzYyMH0.KZdpmmhiBOwbZQV8gD0v6Atx-VCUspmJ-S5lt8lfVQs'
+  );
   try {
-    var client = getClient();
     var results = await Promise.all([
       client.from('issues').select('iid,description'),
       client.from('linked_items').select('*'),
@@ -2592,6 +2643,8 @@ async function loadFromSupabase() {
     var detailByIid = {};
     (linkedDetails || []).forEach(function(d) { detailByIid[d.iid] = d; });
 
+    var iconMap = { wip:'🔄', review:'🔍', todo:'📋', backlog:'⏸', done:'✅', none:'○' };
+
     document.querySelectorAll('.card').forEach(function(card) {
       var codeEl = card.querySelector('.code-chip');
       if (!codeEl) return;
@@ -2600,18 +2653,11 @@ async function loadFromSupabase() {
       if (!srsIid) return;
 
       var links = linksBySrsIid[srsIid] || [];
-      var status, label;
-      if (links.length === 0) {
-        status = 'none'; label = '미분류';
-      } else if (links.every(function(l) { return l.linked_state === 'closed'; })) {
-        status = 'done'; label = '완료';
-      } else {
-        status = 'wip'; label = '진행중';
-      }
+      var cardSt = getCardStatus(links, detailByIid);
 
-      card.dataset.status = status;
+      card.dataset.status = cardSt.status;
       var badge = card.querySelector('.st-badge');
-      if (badge) { badge.className = 'st-badge ' + status; badge.textContent = label; }
+      if (badge) { badge.className = 'st-badge ' + cardSt.status; badge.textContent = cardSt.label; }
 
       if (links.length > 0) {
         var container = card.querySelector('.card-links');
@@ -2621,13 +2667,14 @@ async function loadFromSupabase() {
           card.appendChild(container);
         }
         container.innerHTML = links.map(function(link) {
-          var isClosed = link.linked_state === 'closed';
+          var d = detailByIid[link.linked_iid];
+          var ls = getLabelStatus(d ? d.labels : [], link.linked_state);
           var modalIdx = typeof MODAL_DATA !== 'undefined'
             ? MODAL_DATA.findIndex(function(m) { return m.url === link.linked_web_url; })
             : -1;
-          return '<button class="link-item ' + (isClosed ? 'closed' : 'open') + '"' +
+          return '<button class="link-item ' + ls.status + '"' +
             (modalIdx >= 0 ? ' onclick="openModal(' + modalIdx + ')"' : '') + '>' +
-            '<span class="link-status-icon">' + (isClosed ? '✅' : '🔄') + '</span>' +
+            '<span class="link-status-icon">' + (iconMap[ls.status] || '○') + '</span>' +
             '<span class="link-item-title">' + link.linked_title + '</span>' +
             '<span class="link-arrow">›</span></button>';
         }).join('');
@@ -2647,35 +2694,21 @@ async function loadFromSupabase() {
       });
     }
 
+    setupFilters();
+
     if (syncMeta && syncMeta.last_synced_at) {
       var t = new Date(syncMeta.last_synced_at);
       var pad = function(n) { return String(n).padStart(2, '0'); };
-      var timeLabel = t.getFullYear() + '.' + pad(t.getMonth()+1) + '.' + pad(t.getDate()) +
+      var syncEl = document.createElement('span');
+      syncEl.style.cssText = 'font-size:11px;color:#9aa0ad;font-weight:400;margin-left:8px;';
+      syncEl.textContent = t.getFullYear() + '.' + pad(t.getMonth()+1) + '.' + pad(t.getDate()) +
         ' ' + pad(t.getHours()) + ':' + pad(t.getMinutes()) + ' 동기화';
-      var syncEl = document.getElementById('sync-time-label');
-      if (!syncEl) {
-        syncEl = document.createElement('span');
-        syncEl.id = 'sync-time-label';
-        syncEl.style.cssText = 'font-size:11px;color:#9aa0ad;font-weight:400;margin-left:8px;';
-        var brand = document.querySelector('.topbar-brand');
-        if (brand) brand.appendChild(syncEl);
-      }
-      syncEl.textContent = timeLabel;
+      var brand = document.querySelector('.topbar-brand');
+      if (brand) brand.appendChild(syncEl);
     }
-
-    if (btn) { btn.textContent = '✅ 업데이트됨'; btn.disabled = false; btn.style.opacity = '1'; }
-    setTimeout(function() {
-      var b = document.getElementById('supabase-refresh-btn');
-      if (b) b.textContent = '🔄 새로고침';
-    }, 2000);
-
   } catch(e) {
     console.error('Supabase 데이터 로드 실패:', e);
-    if (btn) { btn.textContent = '❌ 오류'; btn.disabled = false; btn.style.opacity = '1'; }
   }
-}
-
-createRefreshButton();
-loadFromSupabase();
+})();
 </script>
 </body></html>
